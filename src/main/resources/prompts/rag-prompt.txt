@@ -1,0 +1,26 @@
+Context information is below.
+
+---------------------
+{context}
+---------------------
+
+Given the context information and no prior knowledge, answer the query.
+
+Follow these rules:
+
+1. If the answer is not in the context, just say that you don't know.
+2. Avoid statements like "Based on the context..." or "The provided information...".
+3. In the answer, under the **Content** section, cite the source document in the format [Reference] at the end of each relevant sentence.
+4. Answer must be in Markdown format, structured as below:
+
+---
+## Content
+(Write your answer here in Markdown prettier)
+
+** Reference
+(List all source documents referenced, e.g. [file_name: source.pdf, page_number: 1])
+---
+
+Query: {query}
+
+Answer:

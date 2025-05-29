@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM POST 스트리밍 (Spring AI)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f7f7f7;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #chat-area {
+            background-color: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            padding: 20px;
+            margin-top: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            min-height: 100px;
+        }
+        #chat-output {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        #token-usage-box {
+            background-color: #eef7ff;
+            border: 1px solid #cce0ff;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 8px;
+            width: fit-content;
+            display: none;
+        }
+        #token-usage-box h3 {
+            margin-top: 0; margin-bottom: 10px; color: #0056b3; font-size: 1.1em;
+        }
+        #token-usage-box p { margin: 5px 0; font-size: 0.9em; }
+        #token-usage-box span { font-weight: bold; color: #333; }
+        .stream-status { font-size: 0.85em; color: #666; margin-top: 10px; font-style: italic; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>LLM 채팅 (POST 요청 스트리밍)</h1>
+
+        <form id="chat-form">
+            <div>
+                <label for="userId">유저 ID:</label>
+                <input type="text" id="userId" name="userId" value="test-user-123">
+            </div>
+            <div>
+                <label for="chatId">채팅 세션 ID:</label>
+                <input type="text" id="chatId" name="chatId" value="session-abc-789">
+            </div>
+            <div>
+                <label for="prompt">프롬프트:</label>
+                <textarea id="prompt" name="prompt" placeholder="여기에 메시지를 입력하세요..." required></textarea>
+            </div>
+            <div>
+                <label for="model">모델 선택:</label>
+                <select id="model" name="model">
+                    <option value="gemma3:1b" selected>gemma3:1b</option>
+                    <option value="other-model-1">다른 모델 1</option>
+                </select>
+            </div>
+            <div>
+                <label for="temperature">Temperature (0.0 ~ 1.0):</label>
+                <input type="number" id="temperature" name="temperature" value="0.8" step="0.1" min="0" max="1">
+            </div>
+            <div>
+                <label for="maxTokens">Max Tokens:</label>
+                <input type="number" id="maxTokens" name="maxTokens" value="8196" step="1">
+            </div>
+            <div>
+                <label for="topP">Top P (0.0 ~ 1.0):</label>
+                <input type="number" id="topP" name="topP" value="0.90" step="0.01" min="0" max="1">
+            </div>
+            <div>
+                <label for="topK">Top K:</label>
+                <input type="number" id="topK" name="topK" value="30" step="1">
+            </div>
+            <button type="submit" id="submit-button">전송</button>
+        </form>
+
+        <div id="chat-area">
+            <div id="chat-output"></div>
+            <div id="stream-status" class="stream-status">응답 대기 중...</div>
+        </div>
+
+        <div id="token-usage-box">
+            <h3>토큰 사용 정보</h3>
+            <p>프롬프트 토큰: <span id="prompt-tokens">0</span></p>
+            <p>생성 토큰 (Completion): <span id="completion-tokens">0</span></p>
+            <p>총 토큰: <span id="total-tokens">0</span></p>
+        </div>
+    </div>
+
+    <script>
+        const chatForm = document.getElementById('chat-form');
+        const chatOutputElement = document.getElementById('chat-output');
+        const streamStatusElement = document.getElementById('stream-status');
+        const submitButton = document.getElementById('submit-button');
+
+        const tokenUsageBox = document.getElementById('token-usage-box');
+        const promptTokensSpan = document.getElementById('prompt-tokens');
+        const completionTokensSpan = document.getElementById('completion-tokens');
+        const totalTokensSpan = document.getElementById('total-tokens');
+
+        // 중요: '/your-spring-ai-post-sse-endpoint'를 실제 POST SSE 스트림 URL로 변경하세요.
+        const ssePostEndpointUrl = 'http://localhost:8080/api/chat';
+
+        let abortController = null; // To allow aborting the fetch request
+
+        chatForm.addEventListener('submit', async function(event) {
+            event.preventDefault();
+            if (abortController) { // 이미 진행 중인 요청이 있다면 중단
+                abortController.abort();
+            }
+            abortController = new AbortController();
+
+            const formData = new FormData(chatForm);
+            const clientChatRequest = {
+                userId: formData.get('userId'),
+                chatId: formData.get('chatId'),
+                prompt: formData.get('prompt'),
+                model: formData.get('model'),
+                temperature: parseFloat(formData.get('temperature')),
+                maxTokens: parseInt(formData.get('maxTokens')),
+                topP: parseFloat(formData.get('topP')),
+                topK: parseInt(formData.get('topK'))
+            };
+
+            chatOutputElement.textContent = ''; // 이전 채팅 내용 초기화
+            streamStatusElement.textContent = 'LLM 응답 스트리밍 시작...';
+            tokenUsageBox.style.display = 'none'; // 토큰 박스 숨기기
+            promptTokensSpan.textContent = '0';
+            completionTokensSpan.textContent = '0';
+            totalTokensSpan.textContent = '0';
+            submitButton.disabled = true;
+            console.log('Sending POST request with body:', clientChatRequest);
+
+            try {
+                const response = await fetch(ssePostEndpointUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream' // 서버에 SSE 스트림을 기대함을 명시
+                    },
+                    body: JSON.stringify(clientChatRequest),
+                    signal: abortController.signal // AbortController 연결
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`서버 오류: ${response.status} ${response.statusText}. ${errorText}`);
+                }
+
+                if (!response.body) {
+                    throw new Error('응답에 body가 없습니다.');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder(); // UTF-8 디코더
+
+                let buffer = ''; // SSE 메시지를 파싱하기 위한 버퍼
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        if (buffer.trim().length > 0) { // 남아있는 버퍼 처리
+                             processSSEBuffer(buffer);
+                        }
+                        streamStatusElement.textContent = '스트리밍 완료 (연결 종료).';
+                        if (tokenUsageBox.style.display !== 'block' && (parseInt(totalTokensSpan.textContent) > 0 || chatOutputElement.textContent.length > 0) ) {
+                             tokenUsageBox.style.display = 'block'; // finishReason 없이 종료된 경우에도 내용이 있으면 토큰박스 표시
+                        }
+                        console.log('Stream finished by reader "done".');
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+                    // console.log("Raw buffer part:", decoder.decode(value, { stream: true })); // 디버깅용
+
+                    // SSE 메시지는 \n\n 으로 구분됩니다.
+                    let eventEndIndex;
+                    while ((eventEndIndex = buffer.indexOf('\n\n')) !== -1) {
+                        const rawEvent = buffer.substring(0, eventEndIndex);
+                        buffer = buffer.substring(eventEndIndex + 2); // +2 for \n\n
+                        processSSEBuffer(rawEvent);
+                    }
+                }
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    streamStatusElement.textContent = '스트리밍 요청이 중단되었습니다.';
+                    console.log('Fetch aborted.');
+                } else {
+                    streamStatusElement.textContent = `오류: ${error.message}`;
+                    console.error('Fetch 또는 스트리밍 오류:', error);
+                }
+                 if (parseInt(totalTokensSpan.textContent) > 0) { // 오류 발생 시에도 토큰 정보가 있으면 표시
+                    tokenUsageBox.style.display = 'block';
+                }
+            } finally {
+                submitButton.disabled = false;
+                abortController = null; // 컨트롤러 초기화
+            }
+        });
+
+        function processSSEBuffer(rawEventMessages) {
+            // console.log("Processing raw event messages:\n", rawEventMessages);
+            const lines = rawEventMessages.split('\n');
+            let currentEventData = '';
+
+            lines.forEach(line => {
+                if (line.startsWith('data:')) {
+                    currentEventData += line.substring(5).trimLeft(); // 'data:' 이후 부분, 왼쪽 공백 제거
+                } else if (line.trim() === '' && currentEventData.length > 0) {
+                    // 빈 줄은 이벤트의 끝을 의미 (이미 위에서 \n\n으로 나눴으므로 이 경우는 단일 이벤트 처리)
+                    // 또는 여러 'data:' 라인이 합쳐진 경우
+                }
+            });
+
+            if (currentEventData.length > 0) {
+                try {
+                    const chatResponse = JSON.parse(currentEventData);
+                    // console.log('Parsed ChatResponse:', chatResponse); // 디버깅용
+
+                    // 1. 텍스트 청크 처리
+                    if (chatResponse.result && chatResponse.result.output && typeof chatResponse.result.output.text === 'string') {
+                        chatOutputElement.textContent += chatResponse.result.output.text;
+                    }
+
+                    // 2. 토큰 사용량 정보 업데이트
+                    if (chatResponse.metadata && chatResponse.metadata.usage) {
+                        const usage = chatResponse.metadata.usage;
+                        if (usage.promptTokens !== undefined) promptTokensSpan.textContent = usage.promptTokens;
+                        if (usage.completionTokens !== undefined) completionTokensSpan.textContent = usage.completionTokens;
+                        if (usage.totalTokens !== undefined) totalTokensSpan.textContent = usage.totalTokens;
+                    }
+
+                    // 3. 종료 조건 (finishReason) 확인
+                    let finishReason = null;
+                    if (chatResponse.result && chatResponse.result.metadata) {
+                        finishReason = chatResponse.result.metadata.finishReason;
+                    }
+
+                    if (finishReason && finishReason !== null) {
+                        streamStatusElement.textContent = `스트리밍 완료 (사유: ${finishReason}).`;
+                        tokenUsageBox.style.display = 'block';
+                        console.log(`Stream segment finished. Reason: ${finishReason}`);
+                        // 만약 finishReason이 스트림의 완전한 끝을 의미하면 여기서 reader.cancel()도 고려할 수 있지만,
+                        // 서버가 계속해서 다른 메타데이터를 보낼 수도 있습니다.
+                        // reader.cancel()은 while 루프를 중단시킵니다.
+                    } else {
+                        streamStatusElement.textContent = '응답 수신 중...';
+                    }
+                } catch (e) {
+                    console.error('SSE 데이터 파싱 오류:', e, '원본 데이터:', currentEventData);
+                    // streamStatusElement.textContent = '오류: 응답 데이터 파싱 실패.';
+                }
+            }
+        }
+
+    </script>
+
+</body>
+</html>

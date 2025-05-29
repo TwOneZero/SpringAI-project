@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  pgvector-db:
+    image: pgvector/pgvector:pg16 # PostgreSQL with pgvector support
+    container_name: pgvector-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+#      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--storage.tsdb.path=/prometheus"
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+volumes:
+  postgres_data:
+    driver: local
+  prometheus_data:
+    driver: local
